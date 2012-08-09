@@ -4,6 +4,7 @@
 #include <sys/types.h>
 #include <sys/uio.h>
 #include <unistd.h>
+#include "linux/kernel.h"
 
 #ifdef CONFIG_HAS_AIO
 #include <libaio.h>
@@ -40,4 +41,14 @@ int aio_pwritev(io_context_t ctx, struct iocb *iocb, int fd, const struct iovec 
 		off_t offset, int ev, void *param);
 #endif
 
+static inline ssize_t get_iov_size(const struct iovec *iov, int iovcnt)
+{
+	size_t size = 0;
+	while (iovcnt--)
+		size += (iov++)->iov_len;
+
+	return size;
+}
+ssize_t iov_from_buf(const struct iovec *iov, int iovcnt, void *buf, size_t len);
+ssize_t iov_to_buf(const struct iovec *iov, int iovcnt, void *buf, size_t len);
 #endif /* KVM_READ_WRITE_H */

@@ -75,11 +75,17 @@ struct disk_image *disk_image__new(int fd, u64 size,
 	return disk;
 }
 
-struct disk_image *disk_image__open(const char *filename, bool readonly, bool direct)
+struct disk_image *disk_image__open(const char *filename, bool readonly, bool direct, bool sheepdog)
 {
 	struct disk_image *disk;
 	struct stat st;
 	int fd, flags;
+
+	if (sheepdog) {
+		disk = sd_image__probe();
+		if (!IS_ERR_OR_NULL(disk))
+			return disk;
+	}
 
 	if (readonly)
 		flags = O_RDONLY;
@@ -124,6 +130,7 @@ struct disk_image **disk_image__open_all(struct disk_image_params *params, int c
 	const char *filename;
 	bool readonly;
 	bool direct;
+	bool sheepdog;
 	void *err;
 	int i;
 
@@ -140,10 +147,11 @@ struct disk_image **disk_image__open_all(struct disk_image_params *params, int c
 		filename = params[i].filename;
 		readonly = params[i].readonly;
 		direct = params[i].direct;
+		sheepdog = params[i].sheepdog;
 		if (!filename)
 			continue;
 
-		disks[i] = disk_image__open(filename, readonly, direct);
+		disks[i] = disk_image__open(filename, readonly, direct, sheepdog);
 		if (IS_ERR_OR_NULL(disks[i])) {
 			pr_err("Loading disk image '%s' failed", filename);
 			err = disks[i];

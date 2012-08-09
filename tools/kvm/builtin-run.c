@@ -178,6 +178,8 @@ static int img_name_parser(const struct option *opt, const char *arg, int unset)
 				disk_image[image_count].readonly = true;
 			else if (strncmp(sep + 1, "direct", 6) == 0)
 				disk_image[image_count].direct = true;
+			else if (strncmp(sep + 1, "sheepdog", 9) == 0)
+				disk_image[image_count].sheepdog = true;
 			*sep = 0;
 			cur = sep + 1;
 		}

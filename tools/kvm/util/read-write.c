@@ -180,15 +180,6 @@ restart:
 	return nr;
 }
 
-static inline ssize_t get_iov_size(const struct iovec *iov, int iovcnt)
-{
-	size_t size = 0;
-	while (iovcnt--)
-		size += (iov++)->iov_len;
-
-	return size;
-}
-
 static inline void shift_iovec(const struct iovec **iov, int *iovcnt,
 				size_t nr, ssize_t *total, size_t *count, off_t *offset)
 {
@@ -316,6 +307,39 @@ ssize_t pwritev_in_full(int fd, const struct iovec *iov, int iovcnt, off_t offse
 
 	return total;
 }
+
+ssize_t iov_from_buf(const struct iovec *iov, int iovcnt, void *buf, size_t len)
+{
+	char *pos = buf;
+	size_t left = len, cnt;
+	int i;
+
+	for (i = 0; i < iovcnt; i++) {
+		cnt = min(iov[i].iov_len, left);
+		memcpy(iov[i].iov_base, pos, cnt);
+		pos += cnt;
+		left -= cnt;
+	}
+
+	return len;
+}
+
+ssize_t iov_to_buf(const struct iovec *iov, int iovcnt, void *buf, size_t len)
+{
+	char *pos = buf;
+	size_t left = len, cnt;
+	int i;
+
+	for (i = 0; i < iovcnt && left; i++) {
+		cnt = min(iov[i].iov_len, left);
+		memcpy(pos, iov[i].iov_base, cnt);
+		pos += cnt;
+		left -= cnt;
+	}
+
+	return len;
+};
+
 
 #ifdef CONFIG_HAS_AIO
 int aio_pwritev(io_context_t ctx, struct iocb *iocb, int fd, const struct iovec *iov, int iovcnt,
