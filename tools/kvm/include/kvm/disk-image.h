@@ -41,6 +41,8 @@ struct disk_image_operations {
 
 struct disk_image_params {
 	const char *filename;
+	const char *wwpn;
+	const char *tpgt;
 	bool readonly;
 	bool direct;
 };
@@ -57,6 +59,8 @@ struct disk_image {
 #ifdef CONFIG_HAS_AIO
 	io_context_t			ctx;
 #endif
+	const char			*wwpn;
+	const char			*tpgt;
 };
 
 struct disk_image *disk_image__open(const char *filename, bool readonly, bool direct);
