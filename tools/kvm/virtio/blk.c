@@ -12,6 +12,7 @@
 #include "kvm/virtio-pci.h"
 #include "kvm/virtio.h"
 
+#include <linux/vhost.h>
 #include <linux/virtio_ring.h>
 #include <linux/virtio_blk.h>
 #include <linux/kernel.h>
@@ -19,6 +20,8 @@
 #include <linux/types.h>
 #include <pthread.h>
 
+/* TODO: We can remove this after VHOST_BLK_SET_BACKEND goes in linux/vhost.h */
+#define VHOST_BLK_SET_BACKEND _IOW(VHOST_VIRTIO, 0x50, struct vhost_vring_file)
 #define VIRTIO_BLK_MAX_DEV		4
 
 /*
@@ -48,6 +51,8 @@ struct blk_dev {
 
 	struct virt_queue		vqs[NUM_VIRT_QUEUES];
 	struct blk_dev_req		reqs[VIRTIO_BLK_QUEUE_SIZE];
+
+	int				vhost_fd;
 
 	pthread_t			io_thread;
 	int				io_efd;
@@ -158,9 +163,12 @@ static void set_guest_features(struct kvm *kvm, void *dev, u32 features)
 
 static int init_vq(struct kvm *kvm, void *dev, u32 vq, u32 pfn)
 {
+	struct vhost_vring_state state = { .index = vq };
+	struct vhost_vring_addr addr;
 	struct blk_dev *bdev = dev;
 	struct virt_queue *queue;
 	void *p;
+	int r;
 
 	compat__remove_message(compat_id);
 
@@ -170,7 +178,81 @@ static int init_vq(struct kvm *kvm, void *dev, u32 vq, u32 pfn)
 
 	vring_init(&queue->vring, VIRTIO_BLK_QUEUE_SIZE, p, VIRTIO_PCI_VRING_ALIGN);
 
+	if (bdev->vhost_fd == 0)
+		return 0;
+
+	state.num = queue->vring.num;
+	r = ioctl(bdev->vhost_fd, VHOST_SET_VRING_NUM, &state);
+	if (r < 0)
+		die_perror("VHOST_SET_VRING_NUM failed");
+	state.num = 0;
+	r = ioctl(bdev->vhost_fd, VHOST_SET_VRING_BASE, &state);
+	if (r < 0)
+		die_perror("VHOST_SET_VRING_BASE failed");
+
+	addr = (struct vhost_vring_addr) {
+		.index = vq,
+		.desc_user_addr = (u64)(unsigned long)queue->vring.desc,
+		.avail_user_addr = (u64)(unsigned long)queue->vring.avail,
+		.used_user_addr = (u64)(unsigned long)queue->vring.used,
+	};
+
+	r = ioctl(bdev->vhost_fd, VHOST_SET_VRING_ADDR, &addr);
+	if (r < 0)
+		die_perror("VHOST_SET_VRING_ADDR failed");
+
 	return 0;
+}
+
+static void notify_vq_gsi(struct kvm *kvm, void *dev, u32 vq, u32 gsi)
+{
+	struct vhost_vring_file file;
+	struct blk_dev *bdev = dev;
+	struct kvm_irqfd irq;
+	int r;
+
+	if (bdev->vhost_fd == 0)
+		return;
+
+	irq = (struct kvm_irqfd) {
+		.gsi	= gsi,
+		.fd	= eventfd(0, 0),
+	};
+	file = (struct vhost_vring_file) {
+		.index	= vq,
+		.fd	= irq.fd,
+	};
+
+	r = ioctl(kvm->vm_fd, KVM_IRQFD, &irq);
+	if (r < 0)
+		die_perror("KVM_IRQFD failed");
+
+	r = ioctl(bdev->vhost_fd, VHOST_SET_VRING_CALL, &file);
+	if (r < 0)
+		die_perror("VHOST_SET_VRING_CALL failed");
+
+	file.fd = bdev->disk->fd;
+	r = ioctl(bdev->vhost_fd, VHOST_BLK_SET_BACKEND, &file);
+	if (r != 0)
+		die("VHOST_BLK_SET_BACKEND failed %d", errno);
+
+}
+
+static void notify_vq_eventfd(struct kvm *kvm, void *dev, u32 vq, u32 efd)
+{
+	struct blk_dev *bdev = dev;
+	struct vhost_vring_file file = {
+		.index	= vq,
+		.fd	= efd,
+	};
+	int r;
+
+	if (bdev->vhost_fd == 0)
+		return;
+
+	r = ioctl(bdev->vhost_fd, VHOST_SET_VRING_KICK, &file);
+	if (r < 0)
+		die_perror("VHOST_SET_VRING_KICK failed");
 }
 
 static void *virtio_blk_thread(void *dev)
@@ -227,11 +309,55 @@ static struct virtio_ops blk_dev_virtio_ops = (struct virtio_ops) {
 	.get_host_features	= get_host_features,
 	.set_guest_features	= set_guest_features,
 	.init_vq		= init_vq,
-	.notify_vq		= notify_vq,
 	.get_pfn_vq		= get_pfn_vq,
 	.get_size_vq		= get_size_vq,
 	.set_size_vq		= set_size_vq,
+	.notify_vq		= notify_vq,
+	.notify_vq_gsi		= notify_vq_gsi,
+	.notify_vq_eventfd	= notify_vq_eventfd,
 };
+
+static void virtio_blk_vhost_init(struct kvm *kvm, struct blk_dev *bdev)
+{
+	u64 features;
+	struct vhost_memory *mem;
+	int r;
+
+	bdev->vhost_fd = open("/dev/vhost-blk", O_RDWR);
+	if (bdev->vhost_fd < 0)
+		die_perror("Failed openning vhost-blk device");
+
+	mem = calloc(1, sizeof(*mem) + sizeof(struct vhost_memory_region));
+	if (mem == NULL)
+		die("Failed allocating memory for vhost memory map");
+
+	mem->nregions = 1;
+	mem->regions[0] = (struct vhost_memory_region) {
+		.guest_phys_addr	= 0,
+		.memory_size		= kvm->ram_size,
+		.userspace_addr		= (unsigned long)kvm->ram_start,
+	};
+
+	r = ioctl(bdev->vhost_fd, VHOST_SET_OWNER);
+	if (r != 0)
+		die_perror("VHOST_SET_OWNER failed");
+
+	r = ioctl(bdev->vhost_fd, VHOST_GET_FEATURES, &features);
+	if (r != 0)
+		die_perror("VHOST_GET_FEATURES failed");
+
+	r = ioctl(bdev->vhost_fd, VHOST_SET_FEATURES, &features);
+	if (r != 0)
+		die_perror("VHOST_SET_FEATURES failed");
+	r = ioctl(bdev->vhost_fd, VHOST_SET_MEM_TABLE, mem);
+	if (r != 0)
+		die_perror("VHOST_SET_MEM_TABLE failed");
+
+	bdev->vdev.use_vhost = true;
+
+	free(mem);
+}
+
 
 static int virtio_blk__init_one(struct kvm *kvm, struct disk_image *disk)
 {
@@ -268,7 +394,11 @@ static int virtio_blk__init_one(struct kvm *kvm, struct disk_image *disk)
 
 	disk_image__set_callback(bdev->disk, virtio_blk_complete);
 
-	pthread_create(&bdev->io_thread, NULL, virtio_blk_thread, bdev);
+	if (disk->use_vhost)
+		virtio_blk_vhost_init(kvm, bdev);
+	else
+		pthread_create(&bdev->io_thread, NULL, virtio_blk_thread, bdev);
+
 	if (compat_id == -1)
 		compat_id = virtio_compat_add_message("virtio-blk", "CONFIG_VIRTIO_BLK");
 

@@ -44,6 +44,8 @@ int disk_img_name_parser(const struct option *opt, const char *arg, int unset)
 				kvm->cfg.disk_image[kvm->cfg.image_count].readonly = true;
 			else if (strncmp(sep + 1, "direct", 6) == 0)
 				kvm->cfg.disk_image[kvm->cfg.image_count].direct = true;
+			else if (strncmp(sep + 1, "vhost", 5) == 0)
+				kvm->cfg.disk_image[kvm->cfg.image_count].use_vhost = true;
 			*sep = 0;
 			cur = sep + 1;
 		}
@@ -210,6 +212,8 @@ static struct disk_image **disk_image__open_all(struct kvm *kvm)
 			goto error;
 		}
 		disks[i]->debug_iodelay = kvm->cfg.debug_iodelay;
+		if (params[i].use_vhost)
+			disks[i]->use_vhost = true;
 	}
 
 	return disks;

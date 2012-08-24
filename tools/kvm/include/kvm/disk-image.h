@@ -48,6 +48,7 @@ struct disk_image_params {
 	 */
 	const char *wwpn;
 	const char *tpgt;
+	bool use_vhost;
 	bool readonly;
 	bool direct;
 };
@@ -64,6 +65,7 @@ struct disk_image {
 #ifdef CONFIG_HAS_AIO
 	io_context_t			ctx;
 #endif
+	bool				use_vhost;
 	const char			*wwpn;
 	const char			*tpgt;
 	int				debug_iodelay;
