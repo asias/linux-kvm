@@ -106,6 +106,7 @@ void kvm_run_set_wrapper_sandbox(void)
 		     "[pci:]<addr>:<size>[:handle=<handle>][:create]",	\
 		     "Share host shmem with guest via pci device",	\
 		     shmem_parser, NULL),				\
+	OPT_INTEGER('\0', "vsock", &(cfg)->cid, "Guest cid"),		\
 	OPT_CALLBACK('d', "disk", kvm, "image or rootfs_dir", "Disk "	\
 			" image or rootfs directory", img_name_parser,	\
 			kvm),						\
